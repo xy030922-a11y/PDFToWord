@@ -15,3 +15,9 @@ Thumbs.db
 /build-*/
 /CMakeUserPresets.json
 /CMakeLists.txt.user*
+
+# Downloaded PDFium archive (the extracted third_party/pdfium-win-x64 is kept)
+/third_party/*.tgz
+
+# Generated portable release archive
+/PdfToWord-*.zip

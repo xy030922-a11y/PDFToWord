@@ -5,19 +5,27 @@
 #include <QCommandLineParser>
 #include <QDesktopServices>
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDragLeaveEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
 #include <QFutureWatcher>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPainter>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QShortcut>
+#include <QStyle>
 #include <QTextStream>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -32,91 +40,110 @@ QString defaultOutput(const QString &source)
     return info.dir().filePath(info.completeBaseName() + QStringLiteral(".docx"));
 }
 
-constexpr auto windowStyle = R"qss(
-QWidget#ConverterWindow { background: #eff3f9; color: #182338; }
-QFrame#Header {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #15233f, stop:1 #253c72);
-    border-radius: 16px;
+QString pathFromField(const QString &text)
+{
+    QString path = text.trimmed();
+    if (path.size() >= 2 && path.startsWith(u'"') && path.endsWith(u'"'))
+        path = path.mid(1, path.size() - 2);
+    return QDir::fromNativeSeparators(path);
 }
-QLabel#Title { color: #f7faff; font-size: 29px; font-weight: 700; }
-QLabel#Subtitle { color: #c9d8f4; font-size: 13px; }
-QFrame#Form {
+
+bool isPdfPath(const QString &path)
+{
+    return path.endsWith(QStringLiteral(".pdf"), Qt::CaseInsensitive);
+}
+
+QString droppedPdf(const QMimeData &data)
+{
+    const auto urls = data.urls();
+    if (urls.size() != 1 || !urls.first().isLocalFile())
+        return {};
+    const QString path = urls.first().toLocalFile();
+    return isPdfPath(path) ? path : QString{};
+}
+
+constexpr auto windowStyle = R"qss(
+QWidget#ConverterWindow { background: #f3f5f8; color: #172b40; }
+QLabel#Title { color: #13273d; font-size: 30px; font-weight: 700; }
+QFrame#Form, QFrame#Feedback {
     background: #ffffff;
-    border: 1px solid #dce4f0;
+    border: 1px solid #d9e1eb;
     border-radius: 14px;
 }
-QLabel[fieldLabel="true"] { color: #23324d; font-weight: 600; }
-QLabel#ModeHint, QLabel#Status { color: #4d5c75; font-size: 13px; }
+QFrame#DropArea {
+    background: #f0f6fc;
+    border: 1px dashed #8aa9c9;
+    border-radius: 9px;
+}
+QFrame#DropArea[dragging="true"] { background: #dfedfb; border-color: #1761a7; }
+QFrame#DropArea:disabled { background: #f3f5f8; border-color: #d2dce7; }
+QLabel[fieldLabel="true"], QLabel#DropTitle, QLabel#StatusTitle {
+    color: #203852;
+    font-weight: 600;
+}
+QLabel#DropTitle { font-size: 15px; }
+QLabel#ModeHint, QLabel#StatusDetail { color: #4b6076; font-size: 13px; }
 QLineEdit, QPushButton, QRadioButton {
+    color: #203852;
     font-size: 14px;
-    border: 1px solid #cbd6e7;
+    border: 1px solid #c7d5e3;
+    border-radius: 7px;
+}
+QLineEdit { background: #f9fbfd; padding: 8px 11px; selection-background-color: #2367a5; }
+QPushButton { background: #ffffff; padding: 8px 13px; font-weight: 600; }
+QPushButton:hover { background: #ecf4fd; border-color: #91b5d9; }
+QPushButton:pressed { background: #dfedfa; }
+QRadioButton { background: #f9fbfd; padding: 10px 11px; spacing: 8px; }
+QRadioButton:hover { background: #f0f6fc; }
+QRadioButton:checked { background: #ecf4fd; border-color: #73a3d1; color: #174d81; }
+QLineEdit:focus, QPushButton:focus, QRadioButton:focus { border-color: #1761a7; }
+QRadioButton::indicator {
+    width: 8px;
+    height: 8px;
+    border: 4px solid #d3dfec;
     border-radius: 8px;
-    color: #1d2d48;
+    background: #ffffff;
 }
-QLineEdit { background: #f8fafd; padding: 9px 12px; selection-background-color: #315cdd; }
-QLineEdit:focus, QPushButton:focus, QRadioButton:focus { border-color: #315cdd; }
-QLineEdit:disabled { color: #596983; }
-QPushButton { background: #f8fafd; padding: 9px 15px; font-weight: 600; }
-QPushButton:hover { background: #ecf2ff; border-color: #9db5e9; }
-QPushButton:pressed { background: #e2ebff; }
-QRadioButton { background: #f8fafd; padding: 11px 12px; spacing: 9px; }
-QRadioButton:hover { background: #f1f5ff; }
-QRadioButton:checked { background: #edf3ff; border-color: #6490ef; color: #2047a8; }
-QRadioButton:focus { border-color: #254bb6; }
-QRadioButton::indicator { width: 8px; height: 8px; border: 4px solid #d6e0ef; border-radius: 8px; background: #ffffff; }
-QRadioButton::indicator:checked { border-color: #315cdd; }
-QPushButton:disabled, QRadioButton:disabled { color: #66748c; }
+QRadioButton::indicator:checked { border-color: #2367a5; }
+QLineEdit:disabled, QPushButton:disabled, QRadioButton:disabled { color: #66788a; }
+QPushButton#UseDefault { padding: 4px 7px; font-size: 12px; }
 QPushButton#Convert {
-    background: #2854d2; border-color: #2854d2; color: #ffffff;
-    padding: 11px 23px; font-size: 15px;
+    background: #1761a7;
+    border-color: #1761a7;
+    color: #ffffff;
+    padding: 10px 19px;
+    font-size: 15px;
 }
-QPushButton#Convert:hover { background: #1e46bd; }
-QPushButton#Convert:pressed { background: #173a9f; }
-QPushButton#Convert:focus { border-color: #122968; }
-QPushButton#Convert:disabled { background: #d7e2fb; border-color: #d7e2fb; color: #304d94; }
-QProgressBar { background: #dce5f3; border: none; border-radius: 3px; }
-QProgressBar::chunk { background: #315cdd; border-radius: 3px; }
+QPushButton#Convert:hover { background: #124f8a; }
+QPushButton#Convert:pressed { background: #104478; }
+QPushButton#Convert:focus { border-color: #092d51; }
+QPushButton#Convert:disabled { background: #e5edf6; border-color: #e5edf6; color: #496681; }
+QProgressBar { background: #e0e9f3; border: none; border-radius: 3px; }
+QProgressBar::chunk { background: #2367a5; border-radius: 3px; }
 )qss";
 
-class DocumentGraphic final : public QWidget
+class PdfIcon final : public QWidget
 {
 public:
-    explicit DocumentGraphic(QWidget *parent) : QWidget(parent) { setFixedSize(120, 72); }
+    explicit PdfIcon(QWidget *parent) : QWidget(parent) { setFixedSize(40, 40); }
 
 protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(QStringLiteral("#dceafa")));
+        painter.drawRoundedRect(rect(), 9, 9);
 
-        const auto drawDocument = [&painter](int x, int y, const QColor &fill, const QColor &line) {
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(fill);
-            painter.drawRoundedRect(QRectF(x, y, 34, 45), 7, 7);
-            painter.setPen(QPen(line, 2, Qt::SolidLine, Qt::RoundCap));
-            painter.drawLine(QPointF(x + 9, y + 14), QPointF(x + 20, y + 14));
-            painter.drawLine(QPointF(x + 9, y + 22), QPointF(x + 25, y + 22));
-            painter.drawLine(QPointF(x + 9, y + 30), QPointF(x + 21, y + 30));
-        };
-        drawDocument(4, 16, QColor(255, 255, 255, 34), QColor("#c9d9fd"));
-        drawDocument(79, 8, QColor("#dce8ff"), QColor("#335dcb"));
-        painter.setPen(QPen(QColor("#a9c2ff"), 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        painter.drawLine(47, 34, 68, 34);
-        painter.drawLine(63, 29, 68, 34);
-        painter.drawLine(68, 34, 63, 39);
+        painter.setPen(QPen(QColor(QStringLiteral("#2367a5")), 1.5, Qt::SolidLine, Qt::RoundCap));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(QRectF(12, 8, 16, 24), 3, 3);
+        painter.drawLine(QPointF(16, 16), QPointF(24, 16));
+        painter.drawLine(QPointF(16, 21), QPointF(24, 21));
+        painter.drawLine(QPointF(16, 26), QPointF(21, 26));
     }
 };
-
-void addFileField(QGridLayout &form, int row, const QString &label, QLineEdit &field,
-                  QPushButton &browse)
-{
-    auto *caption = new QLabel(label);
-    caption->setProperty("fieldLabel", true);
-    caption->setBuddy(&field);
-    form.addWidget(caption, row, 0, 1, 2);
-    form.addWidget(&field, row + 1, 0);
-    form.addWidget(&browse, row + 1, 1);
-}
 
 class MainWindow final : public QWidget
 {
@@ -125,119 +152,196 @@ public:
     {
         setWindowTitle(QStringLiteral("PDF 转 Word"));
         setObjectName(QStringLiteral("ConverterWindow"));
-        setMinimumWidth(600);
+        setAcceptDrops(true);
+        setMinimumWidth(540);
         setStyleSheet(QString::fromLatin1(windowStyle));
 
         auto *layout = new QVBoxLayout(this);
-        layout->setContentsMargins(26, 24, 26, 22);
-        layout->setSpacing(16);
-
-        auto *header = new QFrame(this);
-        header->setObjectName(QStringLiteral("Header"));
-        auto *headerLayout = new QHBoxLayout(header);
-        headerLayout->setContentsMargins(25, 16, 24, 16);
-        auto *heading = new QVBoxLayout;
-        heading->setSpacing(5);
-        auto *title = new QLabel(windowTitle(), header);
+        layout->setContentsMargins(24, 22, 24, 24);
+        layout->setSpacing(14);
+        auto *title = new QLabel(windowTitle(), this);
         title->setObjectName(QStringLiteral("Title"));
-        auto *subtitle = new QLabel(QStringLiteral("保留分页、纸张方向和内容位置"), header);
-        subtitle->setObjectName(QStringLiteral("Subtitle"));
-        heading->addWidget(title);
-        heading->addWidget(subtitle);
-        headerLayout->addLayout(heading, 1);
-        headerLayout->addWidget(new DocumentGraphic(header));
-        layout->addWidget(header);
+        layout->addWidget(title);
 
         auto *form = new QFrame(this);
         form->setObjectName(QStringLiteral("Form"));
         auto *formLayout = new QGridLayout(form);
-        formLayout->setContentsMargins(20, 18, 20, 18);
-        formLayout->setHorizontalSpacing(10);
+        formLayout->setContentsMargins(18, 16, 18, 16);
+        formLayout->setHorizontalSpacing(9);
         formLayout->setVerticalSpacing(8);
         formLayout->setColumnStretch(0, 1);
-        input.setPlaceholderText(QStringLiteral("选择要转换的 PDF 文件"));
+
+        auto *sourceLabel = new QLabel(QStringLiteral("源 PDF"), form);
+        sourceLabel->setProperty("fieldLabel", true);
+        sourceLabel->setBuddy(&input);
+        formLayout->addWidget(sourceLabel, 0, 0, 1, 2);
+
+        dropArea.setObjectName(QStringLiteral("DropArea"));
+        auto *dropLayout = new QHBoxLayout(&dropArea);
+        dropLayout->setContentsMargins(12, 10, 12, 10);
+        dropLayout->setSpacing(11);
+        auto *dropTitle = new QLabel(QStringLiteral("将 PDF 文件拖到这里"), &dropArea);
+        dropTitle->setObjectName(QStringLiteral("DropTitle"));
+        dropLayout->addWidget(new PdfIcon(&dropArea));
+        dropLayout->addWidget(dropTitle, 1);
+        dropLayout->addWidget(&browseInput);
+        formLayout->addWidget(&dropArea, 1, 0, 1, 2);
+
+        input.setPlaceholderText(QStringLiteral("也可以粘贴 PDF 文件路径"));
+        input.setAcceptDrops(false);
+        input.setClearButtonEnabled(true);
+        formLayout->addWidget(&input, 2, 0, 1, 2);
+        formLayout->setRowMinimumHeight(3, 3);
+
+        auto *outputLabel = new QLabel(QStringLiteral("保存为"), form);
+        outputLabel->setProperty("fieldLabel", true);
+        outputLabel->setBuddy(&output);
+        useDefault.setObjectName(QStringLiteral("UseDefault"));
+        formLayout->addWidget(outputLabel, 4, 0);
+        formLayout->addWidget(&useDefault, 4, 1, Qt::AlignRight);
         output.setPlaceholderText(QStringLiteral("默认保存在 PDF 所在文件夹"));
-        addFileField(*formLayout, 0, QStringLiteral("源 PDF"), input, browseInput);
-        formLayout->setRowMinimumHeight(2, 3);
-        addFileField(*formLayout, 3, QStringLiteral("输出 Word"), output, browseOutput);
-        formLayout->setRowMinimumHeight(5, 3);
+        output.setAcceptDrops(false);
+        formLayout->addWidget(&output, 5, 0);
+        formLayout->addWidget(&browseOutput, 5, 1);
+        formLayout->setRowMinimumHeight(6, 3);
 
         auto *modeLabel = new QLabel(QStringLiteral("转换模式"), form);
         modeLabel->setProperty("fieldLabel", true);
         modeLabel->setBuddy(&preserveLayout);
-        formLayout->addWidget(modeLabel, 6, 0, 1, 2);
+        formLayout->addWidget(modeLabel, 7, 0, 1, 2);
         auto *modeLayout = new QHBoxLayout;
-        modeLayout->setSpacing(10);
+        modeLayout->setSpacing(9);
         preserveLayout.setChecked(true);
         modeLayout->addWidget(&preserveLayout, 1);
         modeLayout->addWidget(&editable, 1);
-        formLayout->addLayout(modeLayout, 7, 0, 1, 2);
+        formLayout->addLayout(modeLayout, 8, 0, 1, 2);
         hint.setObjectName(QStringLiteral("ModeHint"));
         hint.setWordWrap(true);
-        formLayout->addWidget(&hint, 8, 0, 1, 2);
+        formLayout->addWidget(&hint, 9, 0, 1, 2);
         layout->addWidget(form);
-        layout->addStretch();
 
-        auto *footer = new QHBoxLayout;
-        auto *feedback = new QVBoxLayout;
-        feedback->setSpacing(8);
-        status.setObjectName(QStringLiteral("Status"));
-        status.setWordWrap(true);
+        auto *feedback = new QFrame(this);
+        feedback->setObjectName(QStringLiteral("Feedback"));
+        auto *feedbackLayout = new QHBoxLayout(feedback);
+        feedbackLayout->setContentsMargins(14, 12, 14, 12);
+        feedbackLayout->setSpacing(14);
+        auto *statusLayout = new QVBoxLayout;
+        statusLayout->setSpacing(6);
+        statusTitle.setObjectName(QStringLiteral("StatusTitle"));
+        statusDetail.setObjectName(QStringLiteral("StatusDetail"));
+        statusDetail.setTextFormat(Qt::PlainText);
+        statusDetail.setTextInteractionFlags(Qt::TextSelectableByMouse);
+        statusDetail.setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        statusDetail.setWordWrap(true);
+        progress.setAccessibleName(QStringLiteral("转换进度"));
         progress.setTextVisible(false);
         progress.setFixedHeight(6);
-        progress.setRange(0, 1);
-        progress.setValue(0);
-        feedback->addWidget(&status);
-        feedback->addWidget(&progress);
-        footer->addLayout(feedback, 1);
-        footer->setSpacing(18);
-        convert.setObjectName(QStringLiteral("Convert"));
-        convert.setMinimumWidth(132);
-        footer->addWidget(&convert, 0, Qt::AlignVCenter);
-        layout->addLayout(footer);
+        statusLayout->addWidget(&statusTitle);
+        statusLayout->addWidget(&statusDetail);
+        statusLayout->addWidget(&progress);
 
-        setTabOrder(&input, &browseInput);
-        setTabOrder(&browseInput, &output);
+        auto *actions = new QHBoxLayout(&resultActions);
+        actions->setContentsMargins(0, 0, 0, 0);
+        actions->setSpacing(7);
+        actions->addWidget(&openDocument);
+        actions->addWidget(&openFolder);
+        actions->addStretch();
+        statusLayout->addWidget(&resultActions);
+        feedbackLayout->addLayout(statusLayout, 1);
+        convert.setObjectName(QStringLiteral("Convert"));
+        convert.setMinimumWidth(120);
+        feedbackLayout->addWidget(&convert, 0, Qt::AlignTop);
+        layout->addWidget(feedback);
+        layout->addStretch();
+
+        setTabOrder(&browseInput, &input);
+        setTabOrder(&input, &useDefault);
+        setTabOrder(&useDefault, &output);
         setTabOrder(&output, &browseOutput);
         setTabOrder(&browseOutput, &preserveLayout);
         setTabOrder(&editable, &convert);
+        setTabOrder(&convert, &openDocument);
+        setTabOrder(&openDocument, &openFolder);
 
-        connect(&browseInput, &QPushButton::clicked, this, [this] {
-            const auto path = QFileDialog::getOpenFileName(this, QStringLiteral("选择 PDF 文件"),
-                                                          input.text(), QStringLiteral("PDF 文件 (*.pdf)"));
-            if (!path.isEmpty()) {
-                input.setText(QDir::toNativeSeparators(path));
-                output.setText(QDir::toNativeSeparators(defaultOutput(path)));
-            }
+        auto *openShortcut = new QShortcut(QKeySequence::Open, this);
+        connect(openShortcut, &QShortcut::activated, &browseInput, &QPushButton::click);
+        connect(&browseInput, &QPushButton::clicked, this, [this] { selectInput(); });
+        connect(&input, &QLineEdit::textChanged, this, [this] { refreshSettings(); });
+        connect(&output, &QLineEdit::textEdited, this, [this] {
+            customOutput = !pathFromField(output.text()).isEmpty();
+            refreshSettings(false);
         });
-        connect(&input, &QLineEdit::editingFinished, this, [this] {
-            if (output.text().trimmed().isEmpty() && !input.text().trimmed().isEmpty())
-                output.setText(QDir::toNativeSeparators(defaultOutput(input.text().trimmed())));
+        connect(&output, &QLineEdit::editingFinished, this, [this] {
+            if (!customOutput && pathFromField(output.text()).isEmpty())
+                updateDefaultOutput();
         });
-        connect(&browseOutput, &QPushButton::clicked, this, [this] {
-            auto path = QFileDialog::getSaveFileName(this, QStringLiteral("保存 Word 文档"),
-                                                    output.text(), QStringLiteral("Word 文档 (*.docx)"),
-                                                    nullptr, QFileDialog::DontConfirmOverwrite);
-            if (!path.isEmpty()) {
-                if (QFileInfo(path).suffix().isEmpty())
-                    path += QStringLiteral(".docx");
-                output.setText(QDir::toNativeSeparators(path));
-            }
+        connect(&browseOutput, &QPushButton::clicked, this, [this] { selectOutput(); });
+        connect(&useDefault, &QPushButton::clicked, this, [this] {
+            customOutput = false;
+            refreshSettings();
         });
-        connect(&preserveLayout, &QRadioButton::toggled, this, [this] { updateHint(); });
+        connect(&preserveLayout, &QRadioButton::toggled, this, [this] { refreshSettings(false); });
         connect(&convert, &QPushButton::clicked, this, [this] { startConversion(); });
         connect(&watcher, &QFutureWatcher<QString>::finished, this, [this] { finishConversion(); });
-        updateHint();
-        resize(708, sizeHint().height());
+        connect(&openDocument, &QPushButton::clicked, this, [this] {
+            if (!QDesktopServices::openUrl(QUrl::fromLocalFile(resultPath)))
+                setFeedback(QStringLiteral("无法打开文档。请安装可打开 .docx 的程序，例如 WPS 或 LibreOffice"),
+                            QDir::toNativeSeparators(resultPath));
+        });
+        connect(&openFolder, &QPushButton::clicked, this, [this] {
+            const QString folder = QFileInfo(resultPath).absolutePath();
+            if (!QDesktopServices::openUrl(QUrl::fromLocalFile(folder)))
+                setFeedback(QStringLiteral("无法打开所在文件夹"), QDir::toNativeSeparators(folder));
+        });
+
+        refreshSettings();
+        resize(700, sizeHint().height());
     }
 
     ~MainWindow() override { watcher.waitForFinished(); }
 
 protected:
+    void dragEnterEvent(QDragEnterEvent *event) override
+    {
+        if (busy || !event->possibleActions().testFlag(Qt::CopyAction) || droppedPdf(*event->mimeData()).isEmpty())
+            return;
+        setDropHighlight(true);
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+    }
+
+    void dragMoveEvent(QDragMoveEvent *event) override
+    {
+        if (busy || !event->possibleActions().testFlag(Qt::CopyAction)) {
+            event->ignore();
+            return;
+        }
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+    }
+
+    void dragLeaveEvent(QDragLeaveEvent *event) override
+    {
+        setDropHighlight(false);
+        event->accept();
+    }
+
+    void dropEvent(QDropEvent *event) override
+    {
+        setDropHighlight(false);
+        const QString path = droppedPdf(*event->mimeData());
+        if (busy || !event->possibleActions().testFlag(Qt::CopyAction) || path.isEmpty() || !QFileInfo(path).isFile())
+            return;
+        input.setText(QDir::toNativeSeparators(path));
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+    }
+
     void closeEvent(QCloseEvent *event) override
     {
         if (busy) {
-            status.setText(QStringLiteral("请等待当前转换完成后再关闭窗口。"));
+            statusDetail.setText(QStringLiteral("转换完成后即可关闭窗口。"));
+            statusDetail.show();
             event->ignore();
             return;
         }
@@ -250,98 +354,197 @@ private:
         return preserveLayout.isChecked() ? ConversionMode::PreserveLayout : ConversionMode::Editable;
     }
 
-    void updateHint()
+    void setDropHighlight(bool active)
     {
-        hint.setText(currentMode() == ConversionMode::PreserveLayout
-            ? QStringLiteral("每页以整页图片写入 Word，适用于文字版和扫描版 PDF。")
-            : QStringLiteral("需要桌面版 Microsoft Word 2013 或更新版本。分页和排版可能变化。"));
+        dropArea.setProperty("dragging", active);
+        dropArea.style()->unpolish(&dropArea);
+        dropArea.style()->polish(&dropArea);
+        dropArea.update();
     }
 
-    void setBusy(bool value)
+    void selectInput()
     {
-        busy = value;
-        input.setEnabled(!busy);
-        output.setEnabled(!busy);
-        browseInput.setEnabled(!busy);
-        browseOutput.setEnabled(!busy);
-        preserveLayout.setEnabled(!busy);
-        editable.setEnabled(!busy);
-        convert.setEnabled(!busy);
+        const QString path = QFileDialog::getOpenFileName(
+            this, QStringLiteral("选择 PDF 文件"), pathFromField(input.text()), QStringLiteral("PDF 文件 (*.pdf)"));
+        if (!path.isEmpty())
+            input.setText(QDir::toNativeSeparators(path));
+    }
+
+    void selectOutput()
+    {
+        QFileDialog dialog(this, QStringLiteral("保存 Word 文档"), {}, QStringLiteral("Word 文档 (*.docx)"));
+        dialog.setAcceptMode(QFileDialog::AcceptSave);
+        dialog.setDefaultSuffix(QStringLiteral("docx"));
+        dialog.setOption(QFileDialog::DontConfirmOverwrite);
+        const QString path = pathFromField(output.text());
+        if (!path.isEmpty())
+            dialog.selectFile(path);
+        if (dialog.exec() == QDialog::Accepted) {
+            customOutput = true;
+            output.setText(QDir::toNativeSeparators(dialog.selectedFiles().first()));
+            refreshSettings(false);
+        }
+    }
+
+    void updateDefaultOutput()
+    {
+        const QString source = pathFromField(input.text());
+        output.setText(isPdfPath(source)
+            ? QDir::toNativeSeparators(defaultOutput(QFileInfo(source).absoluteFilePath()))
+            : QString{});
+    }
+
+    void setFeedback(const QString &title, const QString &detail = {})
+    {
+        statusTitle.setText(title);
+        statusDetail.setText(detail);
+        statusDetail.setVisible(!detail.isEmpty());
+    }
+
+    void refreshSettings(bool updateOutput = true)
+    {
+        if (updateOutput && !customOutput)
+            updateDefaultOutput();
+
+        resultPath.clear();
+        resultActions.hide();
+        progress.hide();
+        hint.setText(currentMode() == ConversionMode::PreserveLayout
+            ? QStringLiteral("以整页图片保留分页和方向，适用于扫描版 PDF。无需安装 Microsoft Word。")
+            : QStringLiteral("直接从 PDF 提取文字生成可编辑文档，无需安装 Microsoft Word。"
+                             "会自动缩小字号以适应页面；只有无文字层的扫描页才转为图片，排版可能变化。"));
+
+        const QString source = pathFromField(input.text());
+        if (source.isEmpty())
+            setFeedback(QStringLiteral("等待选择 PDF"));
+        else if (!isPdfPath(source))
+            setFeedback(QStringLiteral("请选择 .pdf 文件"));
+        else
+            setFeedback(QStringLiteral("等待转换"));
+        updateControls();
+    }
+
+    void updateControls()
+    {
+        const bool ready = !busy;
+        input.setEnabled(ready);
+        output.setEnabled(ready);
+        dropArea.setEnabled(ready);
+        browseOutput.setEnabled(ready);
+        useDefault.setEnabled(ready && customOutput);
+        preserveLayout.setEnabled(ready);
+        editable.setEnabled(ready);
+        convert.setEnabled(ready && isPdfPath(pathFromField(input.text())));
         convert.setText(busy ? QStringLiteral("转换中…") : QStringLiteral("开始转换"));
     }
 
     void startConversion()
     {
-        const QString source = input.text().trimmed();
-        QString destination = output.text().trimmed();
-        if (source.isEmpty() || !QFileInfo(source).isFile()) {
-            QMessageBox::warning(this, windowTitle(), QStringLiteral("请先选择要转换的 PDF 文件。"));
+        if (busy)
             return;
-        }
-        if (destination.isEmpty()) {
-            destination = defaultOutput(source);
-            output.setText(QDir::toNativeSeparators(destination));
-        }
-        if (QFileInfo::exists(destination)
-            && QMessageBox::question(this, QStringLiteral("覆盖文件"),
-                                     QStringLiteral("转换完成后覆盖现有的 Word 文件吗？"),
-                                     QMessageBox::Yes | QMessageBox::No,
-                                     QMessageBox::No) != QMessageBox::Yes) {
+
+        const QFileInfo source(pathFromField(input.text()));
+        if (!isPdfPath(source.filePath()) || !source.isFile() || !source.isReadable()) {
+            setFeedback(QStringLiteral("无法读取源 PDF"), QStringLiteral("请检查文件路径和读取权限。"));
+            input.setFocus();
             return;
         }
 
-        const auto selectedMode = currentMode();
-        resultPath = QFileInfo(destination).absoluteFilePath();
-        setBusy(true);
+        QString path = pathFromField(output.text());
+        if (path.isEmpty())
+            path = defaultOutput(source.absoluteFilePath());
+        if (QFileInfo(path).isDir() || path.endsWith(u'/')) {
+            setFeedback(QStringLiteral("请填写保存文件名"), QStringLiteral("保存位置需要包含 .docx 文件名。"));
+            output.setFocus();
+            return;
+        }
+        if (QFileInfo(path).suffix().isEmpty())
+            path += QStringLiteral(".docx");
+        const QFileInfo destination(path);
+        if (destination.suffix().compare(QStringLiteral("docx"), Qt::CaseInsensitive) != 0
+            || !destination.absoluteDir().exists()) {
+            setFeedback(QStringLiteral("请检查保存位置"), QStringLiteral("请选择已有文件夹并使用 .docx 扩展名。"));
+            output.setFocus();
+            return;
+        }
+
+        const bool replaceExisting = destination.exists() || destination.isSymLink();
+        if (replaceExisting) {
+            QMessageBox confirm(QMessageBox::Question, QStringLiteral("覆盖文件"),
+                                QStringLiteral("转换完成后覆盖现有文件吗？"),
+                                QMessageBox::Yes | QMessageBox::No, this);
+            confirm.setTextFormat(Qt::PlainText);
+            confirm.setInformativeText(QDir::toNativeSeparators(destination.absoluteFilePath()));
+            confirm.setDefaultButton(QMessageBox::No);
+            confirm.button(QMessageBox::Yes)->setText(QStringLiteral("覆盖"));
+            confirm.button(QMessageBox::No)->setText(QStringLiteral("返回"));
+            if (confirm.exec() != QMessageBox::Yes)
+                return;
+        }
+
+        const QString sourcePath = source.absoluteFilePath();
+        const QString destinationPath = destination.absoluteFilePath();
+        const auto mode = currentMode();
+        output.setText(QDir::toNativeSeparators(destinationPath));
+        resultPath = destinationPath;
+        resultActions.hide();
+        busy = true;
+        updateControls();
         progress.setRange(0, 0);
-        status.setText(QStringLiteral("正在转换…"));
-        watcher.setFuture(QtConcurrent::run([this, source, destination, selectedMode] {
-            return convertPdf(source, destination, selectedMode, [this](int completed, int total) {
+        progress.show();
+        setFeedback(mode == ConversionMode::PreserveLayout
+            ? QStringLiteral("正在读取 PDF")
+            : QStringLiteral("正在提取 PDF 文字"));
+        watcher.setFuture(QtConcurrent::run([this, sourcePath, destinationPath, mode, replaceExisting] {
+            return convertPdf(sourcePath, destinationPath, mode, [this](int completed, int total) {
                 QMetaObject::invokeMethod(this, [this, completed, total] {
                     if (!busy)
                         return;
                     progress.setRange(0, total);
                     progress.setValue(completed);
-                    status.setText(QStringLiteral("已处理 %1 / %2 页").arg(completed).arg(total));
+                    setFeedback(completed == total ? QStringLiteral("正在保存 Word 文档")
+                                                   : QStringLiteral("正在处理页面"),
+                                QStringLiteral("已处理 %1 / %2 页").arg(completed).arg(total));
                 }, Qt::QueuedConnection);
-            });
+            }, replaceExisting);
         }));
     }
 
     void finishConversion()
     {
-        const auto error = watcher.result();
-        setBusy(false);
-        progress.setRange(0, 1);
-        progress.setValue(error.isEmpty() ? 1 : 0);
+        const QString error = watcher.result();
+        busy = false;
+        progress.hide();
+        updateControls();
         if (!error.isEmpty()) {
-            status.setText(QStringLiteral("转换失败"));
-            QMessageBox::warning(this, QStringLiteral("转换失败"), error);
+            resultPath.clear();
+            setFeedback(QStringLiteral("转换失败"), error);
             return;
         }
 
-        status.setText(QStringLiteral("已保存到 %1").arg(QDir::toNativeSeparators(resultPath)));
-        if (QMessageBox::question(this, QStringLiteral("转换完成"),
-                                 QStringLiteral("现在打开 Word 文档吗？"),
-                                 QMessageBox::Yes | QMessageBox::No,
-                                 QMessageBox::No) == QMessageBox::Yes
-            && !QDesktopServices::openUrl(QUrl::fromLocalFile(resultPath))) {
-            QMessageBox::warning(this, windowTitle(), QStringLiteral("无法打开 Word 文档。"));
-        }
+        setFeedback(QStringLiteral("转换完成"), QDir::toNativeSeparators(resultPath));
+        resultActions.show();
     }
 
+    QFrame dropArea;
     QLineEdit input;
     QLineEdit output;
     QPushButton browseInput{QStringLiteral("选择文件…")};
     QPushButton browseOutput{QStringLiteral("选择位置…")};
+    QPushButton useDefault{QStringLiteral("恢复默认")};
     QRadioButton preserveLayout{QStringLiteral("保留原版式")};
     QRadioButton editable{QStringLiteral("可编辑文本")};
     QLabel hint;
+    QLabel statusTitle;
+    QLabel statusDetail;
     QProgressBar progress;
-    QLabel status{QStringLiteral("等待选择文件")};
+    QWidget resultActions;
+    QPushButton openDocument{QStringLiteral("打开文档")};
+    QPushButton openFolder{QStringLiteral("打开文件夹")};
     QPushButton convert{QStringLiteral("开始转换")};
     QFutureWatcher<QString> watcher;
     QString resultPath;
+    bool customOutput = false;
     bool busy = false;
 };
 
@@ -353,7 +556,7 @@ int main(int argc, char **argv)
     parser.setApplicationDescription(QStringLiteral("将 PDF 转换为 Word DOCX"));
     parser.addHelpOption();
     const QCommandLineOption editable(QStringLiteral("editable"),
-                                      QStringLiteral("使用 Microsoft Word 生成可编辑文本。"));
+                                      QStringLiteral("从 PDF 提取文字生成可编辑文本，无需 Microsoft Word。"));
     parser.addOption(editable);
     parser.addPositionalArgument(QStringLiteral("pdf"), QStringLiteral("待转换的 PDF 文件"),
                                  QStringLiteral("[pdf]"));
