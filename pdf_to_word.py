@@ -13,9 +13,9 @@ from tkinter import filedialog, messagebox, ttk
 WD_FORMAT_DOCX = 16
 WD_AUTOMATION_SECURITY_FORCE_DISABLE = 3
 WORD_MAX_PAGE_POINTS = 22 * 72
-PAGE_IMAGE_DPI = 216
+PAGE_IMAGE_DPI = 300
 CONVERSION_MODES = {
-    "保留原版式（整页图片）": "layout",
+    "保留原版式": "layout",
     "可编辑文本": "auto",
 }
 
@@ -52,7 +52,7 @@ def _anchor_to_page(picture, page_number):
         "simplePos": "0",
         "relativeHeight": "0",
         "behindDoc": "0",
-        "locked": "0",
+        "locked": "1",
         "layoutInCell": "1",
         "allowOverlap": "1",
     }.items():
@@ -71,6 +71,10 @@ def _anchor_to_page(picture, page_number):
         anchor.append(position)
 
     anchor.append(inline.extent)
+    effect_extent = OxmlElement("wp:effectExtent")
+    for edge in ("l", "t", "r", "b"):
+        effect_extent.set(edge, "0")
+    anchor.append(effect_extent)
     anchor.append(OxmlElement("wp:wrapNone"))
     inline.docPr.set("descr", f"PDF 第 {page_number} 页")
     for child in list(inline):
@@ -78,16 +82,26 @@ def _anchor_to_page(picture, page_number):
     inline.getparent().replace(inline, anchor)
 
 
-def _convert_preserving_layout(source, destination):
+def _convert_preserving_layout(source, destination, progress):
     try:
         import pymupdf
         from docx import Document
         from docx.enum.section import WD_ORIENT, WD_SECTION_START
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
         from docx.shared import Pt, Twips
     except ImportError as exc:
         raise ConversionError("缺少版式转换依赖，请双击“启动.bat”完成安装。") from exc
 
     document = Document()
+    settings = document.settings.element
+    view = OxmlElement("w:view")
+    view.set(qn("w:val"), "print")
+    settings.insert_element_before(view, "w:zoom")
+    settings.insert_element_before(
+        OxmlElement("w:doNotAutoCompressPictures"), "w:shapeDefaults", "w:decimalSymbol"
+    )
+
     # The paragraphs hold the anchors and section breaks without taking up a full line.
     paragraph_format = document.styles["Normal"].paragraph_format
     paragraph_format.space_before = paragraph_format.space_after = Pt(0)
@@ -119,8 +133,13 @@ def _convert_preserving_layout(source, destination):
 
             zoom = scale * PAGE_IMAGE_DPI / 72
             image = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
-            picture = paragraph.add_run().add_picture(BytesIO(image.tobytes("png")), width, height)
+            image.set_dpi(PAGE_IMAGE_DPI, PAGE_IMAGE_DPI)
+            image_stream = BytesIO(image.tobytes("png"))
+            del image
+            picture = paragraph.add_run().add_picture(image_stream, width, height)
             _anchor_to_page(picture, page_number)
+            if progress is not None:
+                progress(page_number, pdf.page_count)
 
     document.save(destination)
 
@@ -191,7 +210,7 @@ def _convert_with_builtin_engine(source, destination):
             converter.close()
 
 
-def convert_pdf(pdf_path, output_path, engine="layout"):
+def convert_pdf(pdf_path, output_path, engine="layout", *, progress=None):
     source = Path(pdf_path).expanduser().resolve()
     destination = Path(output_path).expanduser().resolve()
 
@@ -219,7 +238,7 @@ def convert_pdf(pdf_path, output_path, engine="layout"):
 
     try:
         if engine == "layout":
-            _convert_preserving_layout(source, temp_path)
+            _convert_preserving_layout(source, temp_path, progress)
             used_engine = "保留原版式"
         elif engine == "word":
             _convert_with_word(source, temp_path)

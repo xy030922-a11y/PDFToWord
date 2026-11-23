@@ -7,6 +7,8 @@ venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Local conversion output and Word lock files
 /*.docx
@@ -15,3 +17,10 @@ __pycache__/
 # Windows Explorer metadata
 Thumbs.db
 [Dd]esktop.ini
+
+# Local CMake builds and IDE settings
+/build/
+/build-*/
+/.vs/
+/CMakeUserPresets.json
+/CMakeLists.txt.user*
