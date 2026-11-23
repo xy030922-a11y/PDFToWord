@@ -1,0 +1,17 @@
+# Local Python environments
+/.conda/
+.venv/
+venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local conversion output and Word lock files
+/*.docx
+~$*.docx
+
+# Windows Explorer metadata
+Thumbs.db
+[Dd]esktop.ini
