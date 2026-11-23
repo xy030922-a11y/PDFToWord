@@ -1,12 +1,6 @@
-# Local Python environments
+# Local files from the Python version
 /.conda/
-.venv/
-venv/
-
-# Python caches
-__pycache__/
-*.py[cod]
-.pytest_cache/
+/__pycache__/
 
 # Local conversion output and Word lock files
 /*.docx
